@@ -1,4 +1,4 @@
-import { AllResponses, ScoreProfile, FlagLevel } from './types';
+import { AllResponses, ScoreProfile, FlagLevel, SectionDResponses } from './types';
 
 // Answer key for Section D
 const sectionDAnswers: Record<string, string> = {
@@ -36,7 +36,7 @@ function sum(values: number[]): number {
 }
 
 // Count correct answers in Section D
-function countCorrect(responses: Record<string, string>, keys: string[]): number {
+function countCorrect(responses: SectionDResponses, keys: (keyof SectionDResponses)[]): number {
   return keys.filter(key => responses[key] === sectionDAnswers[key]).length;
 }
 
