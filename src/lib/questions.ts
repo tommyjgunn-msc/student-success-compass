@@ -691,5 +691,5 @@ export const degreePrograms = [
   { value: 'bsc-computing', label: 'Bachelors of Science in Computing' },
   { value: 'bsc-software-engineering', label: 'Bachelors of Science in Software Engineering' },
   { value: 'bsc-entrepreneurial-leadership', label: 'Bachelors of Science in Entrepreneurial Leadership' },
-  { value: 'ba-international-business', label: 'Bachelors of Arts in International Business and Trade' },
+  { value: 'bsc-international-business', label: 'Bachelors of Science in International Business and Trade' },
 ];
