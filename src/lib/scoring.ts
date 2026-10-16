@@ -1,412 +1,320 @@
-import { AllResponses, ScoreProfile, FlagLevel, SectionDResponses } from './types';
+// Scoring runs on the server only. The browser sends raw answers; it never
+// sends scores, so nobody can change what Student Success sees by editing a
+// request. The same functions are unit-tested in tests/scoring.test.ts.
 
-// Answer key for Section D
-const sectionDAnswers: Record<string, string> = {
-  D1: 'B', // 162 (multiply by 3)
-  D2: 'B', // ■ (Latin square)
-  D3: 'A', // EV (letter pairs)
-  D4: 'A', // △▲▲ (progressive fill)
-  D5: 'C', // $60
-  D6: 'A', // 9 days
-  D7: 'B', // 25%
-  D8: 'B', // 315 km
-  D9: 'B', // Confounding variables
-  D10: 'B', // Affirming the consequent
-  D11: 'B', // Methodology questions
-  D12: 'C', // Reverse causation
+import { ITEM_BY_ID, type Answers } from './instrument';
+import { CONVERSATIONS, type StepCode } from './steps';
+
+export interface Indices {
+  /** Planning, starting early, self-testing, spacing, focus. */
+  studyHabits: number | null;
+  /** Academic self-efficacy: hardest material, assessments, deadlines. */
+  confidence: number | null;
+  /** Goal clarity, relevance of courses, programme fit. */
+  direction: number | null;
+  /** Inverse of belonging uncertainty (Walton & Cohen, 2007). */
+  belonging: number | null;
+  /** Asking classmates or lecturers, first move when struggling, comfort asking. */
+  helpSeeking: number | null;
+  /** WHO-5 percentage score, 0 to 100. */
+  wellbeing: number | null;
+  /** Mean of the five engagement indices; the self-report input to Compass Weekly. */
+  engagement: number | null;
+}
+
+export type FlagCode =
+  | 'WELLBEING_URGENT'
+  | 'WELLBEING_LOW'
+  | 'MONEY'
+  | 'ACCESS'
+  | 'LOAD'
+  | 'CONNECTION'
+  | 'HELP_AVOIDANT'
+  | 'LEARNING_SUPPORT'
+  | 'TRANSITION'
+  | 'UNAWARE'
+  | 'STUDY_STRATEGIES'
+  | 'TIME'
+  | 'DIRECTION'
+  | 'WRITING'
+  | 'READING'
+  | 'NUMBERS'
+  | 'SPEAKING'
+  | 'RESEARCH';
+
+/** Plain descriptions for staff, written into the sheet and the codebook. */
+export const FLAG_INFO: Record<FlagCode, string> = {
+  WELLBEING_URGENT: 'WHO-5 score of 28 or below. Check in within two working days and offer a counselling referral.',
+  WELLBEING_LOW: 'WHO-5 score below 50, the WHO cut-off for poor wellbeing. Offer a wellbeing conversation.',
+  MONEY: 'Often or almost always worries about money for food, rent or transport.',
+  ACCESS: 'No reliable laptop, internet, or both.',
+  LOAD: 'More than 20 hours a week of paid work or caring.',
+  CONNECTION: 'Low sense of belonging, or nobody at ALCHE to turn to.',
+  HELP_AVOIDANT: 'Would wait or keep it to themselves when struggling, or finds asking for help very uncomfortable. Will not come to us; we go to them.',
+  LEARNING_SUPPORT: 'Wants to talk about a disability or learning difference, or thinks they may have one and has never been assessed.',
+  TRANSITION: 'New student used to lecture-and-exam schooling, or continuing student whose last term was harder than expected.',
+  UNAWARE: 'Continuing student who did not know Student Success support existed.',
+  STUDY_STRATEGIES: 'Study habits score below 50, or relies on rereading and rarely self-tests.',
+  TIME: 'Rarely plans the week or starts early, or has little confidence in handling several deadlines.',
+  DIRECTION: 'Direction score below 50, or unsure the programme is right for them.',
+  WRITING: 'Little or no confidence writing an essay or report in English.',
+  READING: 'Little or no confidence reading long academic texts in English.',
+  NUMBERS: 'Little or no confidence with numbers, data and charts.',
+  SPEAKING: 'Little or no confidence presenting to a group.',
+  RESEARCH: 'Little or no confidence finding and judging sources.',
 };
 
-// Helper to determine flag level based on thresholds
-function getFlag(score: number, yellowThreshold: number, redThreshold: number): FlagLevel {
-  if (score >= redThreshold) return 'RED';
-  if (score >= yellowThreshold) return 'YELLOW';
-  return 'GREEN';
+const WELFARE: FlagCode[] = ['WELLBEING_LOW', 'MONEY', 'ACCESS', 'LOAD', 'CONNECTION', 'HELP_AVOIDANT'];
+const SKILLS: FlagCode[] = ['WRITING', 'READING', 'NUMBERS', 'SPEAKING', 'RESEARCH', 'STUDY_STRATEGIES', 'TIME'];
+
+export type Tier = 1 | 2 | 3;
+
+export const TIER_LABEL: Record<Tier, string> = {
+  1: '1 Contact within 2 working days',
+  2: '2 Contact within 2 weeks',
+  3: '3 Welcome only',
+};
+
+export interface Assessment {
+  isNew: boolean;
+  indices: Indices;
+  flags: FlagCode[];
+  tier: Tier;
+  steps: StepCode[];
+  /** Topics folded into the 'checkin' step, when it is used. */
+  talkAbout: StepCode[];
+  quality: string[];
+  requested: string[];
 }
 
-// Calculate wellbeing baseline (A3 is reversed because high stress is bad)
-function calculateWellbeingBaseline(a2: number, a3: number, a4: number): number {
-  // A3 is reversed (high stress = low wellbeing)
-  const a3Reversed = 6 - a3;
-  return (a2 + a3Reversed + a4) / 15; // Returns 0.2-1.0
+// ---- helpers -----------------------------------------------------------------
+
+function single(answers: Answers, id: string): string | undefined {
+  const v = answers[id];
+  return typeof v === 'string' && v !== '' ? v : undefined;
 }
 
-// Sum helper
-function sum(values: number[]): number {
-  return values.reduce((acc, val) => acc + (val || 0), 0);
+function multi(answers: Answers, id: string): string[] {
+  const v = answers[id];
+  return Array.isArray(v) ? v : [];
 }
 
-// Count correct answers in Section D
-function countCorrect(responses: SectionDResponses, keys: (keyof SectionDResponses)[]): number {
-  return keys.filter(key => responses[key] === sectionDAnswers[key]).length;
+/** The option score for an answered item, or null when skipped or unscored. */
+export function itemScore(answers: Answers, id: string): number | null {
+  const item = ITEM_BY_ID[id];
+  const v = single(answers, id);
+  if (!item || item.kind === 'text' || v === undefined) return null;
+  const s = item.options.find((o) => o.value === v)?.score;
+  return typeof s === 'number' ? s : null;
 }
 
-export function calculateScores(responses: AllResponses): ScoreProfile {
-  const { sectionA, sectionB, sectionC, sectionD, sectionE } = responses;
-  
-  // ============================
-  // SECTION A CALCULATIONS
-  // ============================
-  
-  // Language flag (A1: 1-2 = GREEN, 3 = YELLOW, 4-5 = RED)
-  const languageFlag: FlagLevel = sectionA.A1 >= 4 ? 'RED' : sectionA.A1 >= 3 ? 'YELLOW' : 'GREEN';
-  
-  // Wellbeing baseline
-  const wellbeingBaseline = calculateWellbeingBaseline(sectionA.A2, sectionA.A3, sectionA.A4);
-  const wellbeingFlag: FlagLevel = wellbeingBaseline <= 0.4 ? 'RED' : wellbeingBaseline <= 0.6 ? 'YELLOW' : 'GREEN';
-  
-  // ============================
-  // SECTION B CALCULATIONS
-  // ============================
-  
-  // Attention/Focus (B1-B6) - sum of 0-4 scale = 0-24
-  const attentionScore = sum([
-    sectionB.B1, sectionB.B2, sectionB.B3,
-    sectionB.B4, sectionB.B5, sectionB.B6
-  ]);
-  const attentionFlag = getFlag(attentionScore, 9, 14);
-  
-  // Reading/Processing (B7-B11) - sum of 0-4 scale = 0-20
-  const readingScore = sum([
-    sectionB.B7, sectionB.B8, sectionB.B9,
-    sectionB.B10, sectionB.B11
-  ]);
-  const readingFlag = getFlag(readingScore, 7, 12);
-  
-  // Numerical Processing (B12-B15) - sum of 0-4 scale = 0-16
-  const numericalProcessingScore = sum([
-    sectionB.B12, sectionB.B13, sectionB.B14, sectionB.B15
-  ]);
-  const numericalProcessingFlag = getFlag(numericalProcessingScore, 6, 10);
-  
-  // ============================
-  // SECTION C CALCULATIONS
-  // ============================
-  
-  // Academic Preparedness (C1-C6) - sum of 1-5 scale = 6-30
-  const academicPreparedness = sum([
-    sectionC.C1, sectionC.C2, sectionC.C3,
-    sectionC.C4, sectionC.C5, sectionC.C6
-  ]);
-  
-  // Classroom Engagement (C7-C12)
-  const classroomEngagement = sum([
-    sectionC.C7, sectionC.C8, sectionC.C9,
-    sectionC.C10, sectionC.C11, sectionC.C12
-  ]);
-  
-  // Receptivity to Support (C13-C18)
-  const receptivityToSupport = sum([
-    sectionC.C13, sectionC.C14, sectionC.C15,
-    sectionC.C16, sectionC.C17, sectionC.C18
-  ]);
-  
-  // Future Orientation (C19-C24)
-  const futureOrientation = sum([
-    sectionC.C19, sectionC.C20, sectionC.C21,
-    sectionC.C22, sectionC.C23, sectionC.C24
-  ]);
-  
-  // Belonging & Wellbeing (C25-C30)
-  const belongingWellbeing = sum([
-    sectionC.C25, sectionC.C26, sectionC.C27,
-    sectionC.C28, sectionC.C29, sectionC.C30
-  ]);
-  
-  // Total Engagement (all C questions)
-  const totalEngagement = academicPreparedness + classroomEngagement + 
-    receptivityToSupport + futureOrientation + belongingWellbeing;
-  
-  // Grit Indicator (C4, C6, C11, C18, C21, C23)
-  const gritIndicator = sum([
-    sectionC.C4, sectionC.C6, sectionC.C11,
-    sectionC.C18, sectionC.C21, sectionC.C23
-  ]);
-  
-  // ============================
-  // SECTION D CALCULATIONS
-  // ============================
-  
-  // Abstract Reasoning (D1-D4)
-  const abstractReasoning = countCorrect(sectionD, ['D1', 'D2', 'D3', 'D4']);
-  
-  // Numerical Reasoning (D5-D8)
-  const numericalReasoning = countCorrect(sectionD, ['D5', 'D6', 'D7', 'D8']);
-  
-  // Critical Thinking (D9-D12)
-  const criticalThinking = countCorrect(sectionD, ['D9', 'D10', 'D11', 'D12']);
-  
-  // Total Cognitive
-  const totalCognitive = abstractReasoning + numericalReasoning + criticalThinking;
-  
-  // ============================
-  // SECTION E - Pass through
-  // ============================
-  
-  return {
-    // Flags
-    languageFlag,
-    wellbeingFlag,
-    attentionFlag,
-    readingFlag,
-    numericalProcessingFlag,
-    
-    // Raw scores
-    wellbeingBaseline: Math.round(wellbeingBaseline * 100) / 100,
-    attentionScore,
-    readingScore,
-    numericalProcessingScore,
-    
-    // Engagement domain scores
-    academicPreparedness,
-    classroomEngagement,
-    receptivityToSupport,
-    futureOrientation,
-    belongingWellbeing,
-    totalEngagement,
-    gritIndicator,
-    
-    // Cognitive scores
-    abstractReasoning,
-    numericalReasoning,
-    criticalThinking,
-    totalCognitive,
-    
-    // Self-assessment (pass through from E)
-    selfIdentifiedStrengths: sectionE.E1,
-    requestedSupport: sectionE.E2,
-    supportPreference: sectionE.E3,
-    communicationPreference: sectionE.E4,
-    studentNotes: sectionE.E5,
-    successVision: sectionE.E6,
+/**
+ * Mean of the answered items rescaled to 0..100, or null when fewer than half
+ * were answered. `min` and `max` are the item scale's end points.
+ */
+function index(answers: Answers, ids: string[], min: number, max: number): number | null {
+  const scores = ids.map((id) => itemScore(answers, id)).filter((s): s is number => s !== null);
+  if (scores.length < Math.ceil(ids.length / 2)) return null;
+  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+  return Math.round(((mean - min) / (max - min)) * 100);
+}
+
+function meanOf(values: (number | null)[], minCount: number): number | null {
+  const present = values.filter((v): v is number => v !== null);
+  if (present.length < minCount) return null;
+  return Math.round(present.reduce((a, b) => a + b, 0) / present.length);
+}
+
+// ---- scoring -----------------------------------------------------------------
+
+export function computeIndices(answers: Answers): Indices {
+  const studyHabits = index(answers, ['H1', 'H2', 'H3', 'H4', 'H7'], 1, 5);
+  const confidence = index(answers, ['C1', 'C2', 'C3'], 1, 5);
+  const direction = index(answers, ['P1', 'P2', 'P3'], 1, 5);
+  const belonging = index(answers, ['B1', 'B2', 'B3'], 1, 5);
+
+  // Three help-seeking signals on different scales, each rescaled to 0..1 first.
+  const parts: (number | null)[] = [
+    itemScore(answers, 'H6') === null ? null : ((itemScore(answers, 'H6') as number) - 1) / 4,
+    itemScore(answers, 'B5'),
+    itemScore(answers, 'B6') === null ? null : ((itemScore(answers, 'B6') as number) - 1) / 3,
+  ];
+  const presentParts = parts.filter((p): p is number => p !== null);
+  const helpSeeking =
+    presentParts.length >= 2 ? Math.round((presentParts.reduce((a, b) => a + b, 0) / presentParts.length) * 100) : null;
+
+  // WHO-5: raw 0..25, times four. Prorated when exactly one item is skipped.
+  const who = ['W1', 'W2', 'W3', 'W4', 'W5'].map((id) => itemScore(answers, id)).filter((s): s is number => s !== null);
+  const wellbeing = who.length >= 4 ? Math.round((who.reduce((a, b) => a + b, 0) / who.length) * 5 * 4) : null;
+
+  const engagement = meanOf([studyHabits, confidence, direction, belonging, helpSeeking], 3);
+
+  return { studyHabits, confidence, direction, belonging, helpSeeking, wellbeing, engagement };
+}
+
+export function computeFlags(answers: Answers, indices: Indices, isNew: boolean): FlagCode[] {
+  const flags = new Set<FlagCode>();
+  const s = (id: string) => single(answers, id);
+  const low = (id: string) => {
+    const v = itemScore(answers, id);
+    return v !== null && v <= 2;
   };
+
+  if (indices.wellbeing !== null) {
+    if (indices.wellbeing <= 28) flags.add('WELLBEING_URGENT');
+    if (indices.wellbeing < 50) flags.add('WELLBEING_LOW');
+  }
+  if (['often', 'always'].includes(s('S10') ?? '')) flags.add('MONEY');
+  if (['laptop-only', 'internet-only', 'neither'].includes(s('S8') ?? '')) flags.add('ACCESS');
+  if (s('S9') === '20+') flags.add('LOAD');
+
+  // A brand-new student with nobody "yet" is normal in week one; only "No" counts.
+  const alone = s('B4') === 'no' || (!isNew && s('B4') === 'not-yet');
+  if (alone || (indices.belonging !== null && indices.belonging < 40)) flags.add('CONNECTION');
+
+  if (['wait', 'alone'].includes(s('B5') ?? '') || s('B6') === 'very-uncomfortable') flags.add('HELP_AVOIDANT');
+  if (['yes-talk', 'maybe'].includes(s('N3') ?? '')) flags.add('LEARNING_SUPPORT');
+
+  if ((isNew && s('S6') === 'lecture-exam') || (!isNew && ['harder', 'much-harder'].includes(s('S3') ?? ''))) {
+    flags.add('TRANSITION');
+  }
+  if (!isNew && s('S11') === 'unaware') flags.add('UNAWARE');
+
+  const rereads = (itemScore(answers, 'H5') ?? 0) >= 4;
+  const selfTests = itemScore(answers, 'H3');
+  if ((indices.studyHabits !== null && indices.studyHabits < 50) || (rereads && selfTests !== null && selfTests <= 2)) {
+    flags.add('STUDY_STRATEGIES');
+  }
+  if (low('H1') || low('H2') || low('C3')) flags.add('TIME');
+  if ((indices.direction !== null && indices.direction < 50) || low('P3')) flags.add('DIRECTION');
+
+  if (low('C5')) flags.add('WRITING');
+  if (low('C4')) flags.add('READING');
+  if (low('C6')) flags.add('NUMBERS');
+  if (low('C7')) flags.add('SPEAKING');
+  if (low('C8')) flags.add('RESEARCH');
+
+  return Array.from(flags);
 }
 
-// Generate recommendations based on scores
-export interface Recommendation {
-  priority: 'HIGH' | 'MEDIUM' | 'LOW';
-  domain: string;
-  action: string;
-  resource: string;
+export function computeTier(flags: FlagCode[], requested: string[]): Tier {
+  const has = (f: FlagCode) => flags.includes(f);
+  const welfare = WELFARE.filter(has).length;
+  const skills = SKILLS.filter(has).length;
+
+  if (has('WELLBEING_URGENT')) return 1;
+  if (has('HELP_AVOIDANT') && (has('WELLBEING_LOW') || has('MONEY') || has('CONNECTION'))) return 1;
+  if (welfare >= 3) return 1;
+
+  if (welfare >= 1 || has('LEARNING_SUPPORT') || requested.length > 0 || skills >= 2) return 2;
+  if (has('TRANSITION') && has('STUDY_STRATEGIES')) return 2;
+  return 3;
 }
 
-export function generateRecommendations(profile: ScoreProfile): Recommendation[] {
-  const recommendations: Recommendation[] = [];
-  
-  // Language support
-  if (profile.languageFlag === 'RED') {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Language Support',
-      action: 'Connect with Academic English resources',
-      resource: 'Writing Center, Language Labs',
-    });
-  } else if (profile.languageFlag === 'YELLOW') {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Language Support',
-      action: 'Consider Academic English workshops',
-      resource: 'Writing Center',
-    });
-  }
-  
-  // Wellbeing
-  if (profile.wellbeingFlag === 'RED') {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Wellbeing',
-      action: 'Schedule wellness check-in',
-      resource: 'Counseling Services, Student Life',
-    });
-  } else if (profile.wellbeingFlag === 'YELLOW') {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Wellbeing',
-      action: 'Share stress management resources',
-      resource: 'Wellness Programs',
-    });
-  }
-  
-  // Attention/Focus
-  if (profile.attentionFlag === 'RED') {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Focus & Attention',
-      action: 'Discuss attention support strategies; consider assessment referral',
-      resource: 'Learning Support, Disability Services',
-    });
-  } else if (profile.attentionFlag === 'YELLOW') {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Focus & Attention',
-      action: 'Share focus strategies and resources',
-      resource: 'Study Skills Workshop',
-    });
-  }
-  
-  // Reading/Processing
-  if (profile.readingFlag === 'RED') {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Reading Support',
-      action: 'Discuss reading support options; consider assessment referral',
-      resource: 'Learning Support, Disability Services',
-    });
-  } else if (profile.readingFlag === 'YELLOW') {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Reading Support',
-      action: 'Share reading strategies',
-      resource: 'Academic Skills Center',
-    });
-  }
-  
-  // Numerical Processing
-  if (profile.numericalProcessingFlag === 'RED') {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Quantitative Support',
-      action: 'Connect with math support resources',
-      resource: 'Math Lab, Tutoring Services',
-    });
-  } else if (profile.numericalProcessingFlag === 'YELLOW') {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Quantitative Support',
-      action: 'Share quantitative strategies',
-      resource: 'Math Lab',
-    });
-  }
-  
-  // Academic Preparedness (low = 6-14)
-  if (profile.academicPreparedness <= 14) {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Study Skills',
-      action: 'Prioritize study skills programming',
-      resource: 'Academic Skills Workshop Series',
-    });
-  } else if (profile.academicPreparedness <= 18) {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Study Skills',
-      action: 'Invite to study skills workshop',
-      resource: 'Academic Skills Center',
-    });
-  }
-  
-  // Belonging & Wellbeing (low = 6-14)
-  if (profile.belongingWellbeing <= 14) {
-    recommendations.push({
-      priority: 'HIGH',
-      domain: 'Community Connection',
-      action: 'Proactive outreach for community building',
-      resource: 'Student Life, Peer Mentorship',
-    });
-  }
-  
-  // Future Orientation (low = 6-14)
-  if (profile.futureOrientation <= 14) {
-    recommendations.push({
-      priority: 'MEDIUM',
-      domain: 'Career Development',
-      action: 'Connect with career counseling',
-      resource: 'Career Services, Advising',
-    });
-  }
-  
-  // Sort by priority
-  const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
-  recommendations.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
-  
-  return recommendations.slice(0, 5); // Return top 5
-}
+// Which offer answers which request or flag. Order inside each list matters.
+const REQUEST_TO_STEP: Record<string, StepCode> = {
+  writing: 'writing',
+  research: 'library',
+  numbers: 'peer-recap',
+  speaking: 'speaking',
+  time: 'time',
+  study: 'studenting',
+  wellbeing: 'wellbeing',
+  money: 'money',
+  settling: 'peer-recap',
+  career: 'career',
+};
 
-// Get interpretive text for engagement domains
-export function getEngagementInterpretation(score: number, domain: string): { level: string; narrative: string } {
-  // Scores are out of 30 (6 questions × 5-point scale)
-  if (score <= 14) {
-    return {
-      level: 'Developing',
-      narrative: getDevelopingNarrative(domain),
-    };
-  } else if (score <= 22) {
-    return {
-      level: 'Solid Foundation',
-      narrative: getSolidNarrative(domain),
-    };
-  } else {
-    return {
-      level: 'Strong',
-      narrative: getStrongNarrative(domain),
-    };
-  }
-}
+const FLAG_TO_STEP: [FlagCode, StepCode][] = [
+  ['HELP_AVOIDANT', 'office-hours'],
+  ['STUDY_STRATEGIES', 'studenting'],
+  ['TIME', 'time'],
+  ['WRITING', 'writing'],
+  ['READING', 'library'],
+  ['RESEARCH', 'library'],
+  ['NUMBERS', 'peer-recap'],
+  ['CONNECTION', 'peer-recap'],
+  ['SPEAKING', 'speaking'],
+  ['DIRECTION', 'career'],
+  ['TRANSITION', 'studenting'],
+  ['UNAWARE', 'office-hours'],
+];
 
-function getDevelopingNarrative(domain: string): string {
-  const narratives: Record<string, string> = {
-    'Academic Preparedness': 'You may benefit from developing some additional study strategies. Many students find that small adjustments to how they organize their time or approach revision make a significant difference.',
-    'Classroom Engagement': 'There may be opportunities to develop more active engagement strategies. This is something that often grows with practice and the right environment.',
-    'Receptivity to Support': 'You may prefer to work independently, which is valid. However, knowing about available resources can be helpful even if you don\'t use them immediately.',
-    'Future Orientation': 'Clarifying your goals and how your studies connect to them might help with motivation. This is something worth exploring with an advisor.',
-    'Belonging & Wellbeing': 'Building connections and feeling at home takes time, especially in a new environment. We\'d like to help you find your community here.',
+export const MAX_STEPS = 4;
+
+// Studenting 101 includes the Public Speaking session, so it stands in for it.
+const COVERED_BY: Partial<Record<StepCode, StepCode>> = { speaking: 'studenting' };
+
+export function chooseSteps(flags: FlagCode[], requested: string[], helpSeeking: number | null = null): StepCode[] {
+  const out: StepCode[] = [];
+  const add = (c: StepCode) => {
+    const cover = COVERED_BY[c];
+    if (cover && out.includes(cover)) return;
+    const covered = (Object.keys(COVERED_BY) as StepCode[]).find((k) => COVERED_BY[k] === c && out.includes(k));
+    if (covered) {
+      out[out.indexOf(covered)] = c;
+      return;
+    }
+    if (!out.includes(c)) out.push(c);
   };
-  return narratives[domain] || 'This is an area where additional support might be beneficial.';
-}
+  const has = (f: FlagCode) => flags.includes(f);
 
-function getSolidNarrative(domain: string): string {
-  const narratives: Record<string, string> = {
-    'Academic Preparedness': 'You have a solid foundation of study skills. Refining some strategies could help you reach even higher levels of performance.',
-    'Classroom Engagement': 'You show good engagement with your learning. Continue building on these strengths.',
-    'Receptivity to Support': 'You\'re open to support when needed, which is a strength. Don\'t hesitate to reach out when challenges arise.',
-    'Future Orientation': 'You have a reasonable sense of direction. Periodically revisiting and refining your goals can keep you motivated.',
-    'Belonging & Wellbeing': 'You seem to be finding your place. Continue building those connections that matter to you.',
-  };
-  return narratives[domain] || 'You have a solid foundation in this area.';
-}
+  // Safety and access first: these unblock everything else.
+  if (has('WELLBEING_LOW')) add('wellbeing');
+  if (has('LEARNING_SUPPORT')) add('learning-support');
+  if (has('MONEY')) add('money');
+  if (has('ACCESS')) add('access');
 
-function getStrongNarrative(domain: string): string {
-  const narratives: Record<string, string> = {
-    'Academic Preparedness': 'You have strong study skills and academic self-efficacy. You might be well-suited to help peers or take on leadership roles.',
-    'Classroom Engagement': 'You\'re highly engaged in your learning. This active approach will serve you well.',
-    'Receptivity to Support': 'You\'re very open to seeking and receiving support. This is a significant strength for long-term success.',
-    'Future Orientation': 'You have a clear sense of direction and purpose. This will help sustain your motivation through challenges.',
-    'Belonging & Wellbeing': 'You feel well-connected and grounded. This is a wonderful foundation for your journey here.',
-  };
-  return narratives[domain] || 'This is a strong area for you.';
-}
-
-// Get flag interpretation for learning profile
-export function getFlagInterpretation(flag: FlagLevel, domain: string): string {
-  if (flag === 'GREEN') {
-    return `No particular support indicated in this area.`;
-  } else if (flag === 'YELLOW') {
-    const resources: Record<string, string> = {
-      'Language': 'You might benefit from Academic English workshops or writing center visits.',
-      'Wellbeing': 'Consider exploring stress management resources or wellness programs.',
-      'Attention': 'Some focus strategies like time-blocking or the Pomodoro technique might help.',
-      'Reading': 'Reading strategies like active annotation or audio support could be useful.',
-      'Numerical': 'Math lab drop-in sessions or quantitative tutoring might be helpful.',
-    };
-    return resources[domain] || 'You may benefit from some strategies and resources in this area.';
-  } else {
-    return `We recommend a follow-up conversation to discuss support options. Many successful students benefit from these resources.`;
+  // Then what the student asked for, in the order they chose it.
+  for (const r of requested) {
+    const step = REQUEST_TO_STEP[r];
+    if (step) add(step);
   }
+
+  // Then what their answers suggest. Students who find asking hard get a
+  // named person early, because they are the least likely to come to us.
+  if (helpSeeking !== null && helpSeeking < 45) add('office-hours');
+  for (const [flag, step] of FLAG_TO_STEP) if (has(flag)) add(step);
+
+  // Everyone leaves with at least two concrete things to do.
+  if (out.length < 2) add('studenting');
+  if (out.length < 2) add('peer-recap');
+
+  return out;
 }
 
-// Get cognitive interpretation
-export function getCognitiveInterpretation(score: number, total: number, domain: string): string {
-  const percentage = (score / total) * 100;
-  
-  if (percentage >= 75) {
-    return `This appears to be a strength area for you.`;
-  } else if (percentage >= 50) {
-    return `This is in the typical range.`;
-  } else {
-    const suggestions: Record<string, string> = {
-      'Abstract Reasoning': 'Practice with pattern recognition puzzles might strengthen this skill.',
-      'Numerical Reasoning': 'Working through word problems regularly can help develop this area.',
-      'Critical Thinking': 'Analyzing arguments and questioning assumptions builds this skill over time.',
-    };
-    return suggestions[domain] || 'This is an area you might enjoy developing further.';
+/**
+ * Folds two or more "tell us about it" offers into one check-in step, then
+ * caps the list. Returns the steps and the topics folded into the check-in.
+ */
+export function composeSteps(candidates: StepCode[]): { steps: StepCode[]; talkAbout: StepCode[] } {
+  const talkAbout = candidates.filter((c) => CONVERSATIONS.includes(c));
+  if (talkAbout.length < 2) return { steps: candidates.slice(0, MAX_STEPS), talkAbout: [] };
+  const first = candidates.findIndex((c) => CONVERSATIONS.includes(c));
+  const steps = candidates.filter((c, i) => i === first || !CONVERSATIONS.includes(c));
+  steps[first] = 'checkin';
+  return { steps: steps.slice(0, MAX_STEPS), talkAbout };
+}
+
+export function qualityChecks(answers: Answers, seconds: number): string[] {
+  const out: string[] = [];
+  if (seconds < 150) out.push('fast');
+  const same = (ids: string[]) => {
+    const vals = ids.map((id) => single(answers, id)).filter(Boolean);
+    return vals.length === ids.length && new Set(vals).size === 1;
+  };
+  // H7 is reverse-worded, so identical answers across H1 to H7 are contradictory.
+  if (same(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7']) && same(['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8'])) {
+    out.push('straightline');
   }
+  return out;
+}
+
+export function assess(answers: Answers, isNew: boolean, seconds: number): Assessment {
+  const indices = computeIndices(answers);
+  const flags = computeFlags(answers, indices, isNew);
+  const requested = multi(answers, 'N2').filter((v) => v !== 'nothing');
+  const tier = computeTier(flags, requested);
+  const { steps, talkAbout } = composeSteps(chooseSteps(flags, requested, indices.helpSeeking));
+  return { isNew, indices, flags, tier, steps, talkAbout, quality: qualityChecks(answers, seconds), requested };
 }

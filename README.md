@@ -1,178 +1,67 @@
 # Student Success Compass
 
-A 15-minute psychometric screening system for higher education student success, designed for ALCHE (African Leadership College of Higher Education).
+A ten-minute check-in that ALCHE students take at the start of each term.
 
-## Overview
+- **Students** answer about 45 short questions and get a letter from Student Success with
+  three or four next steps tied to real ALCHE services.
+- **Student Success staff** get a Google Sheet row per student: an outreach tier
+  (who to contact first), plain-language flags (why), the student's own requests and
+  contact preference, and six 0 to 100 indices.
+- **Compass Weekly** takes the Engagement index as its self-report input.
 
-The Student Success Compass is a web-based assessment tool that helps identify students who may benefit from additional support and resources. It measures:
+Version 2.0 (October 2026) replaced the original 2026 screener. The research behind every
+question, and what was cut and why, is in `docs/Compass-v2-Design-Rationale-v1.0.pdf`
+and, in short form for students, on the site at `/about`.
 
-- **Learning Profile**: Attention, reading, and numerical processing patterns
-- **Engagement Orientation**: Academic preparedness, classroom engagement, receptivity to support, future orientation, and belonging
-- **Thinking Patterns**: Abstract reasoning, numerical reasoning, and critical thinking
-- **Self-Assessment**: Student-identified strengths and support preferences
+## Layout
 
-Results are automatically submitted to a Google Sheet for dashboard creation and team review.
+```
+src/
+  app/                  pages: / (landing), /compass (the form), /about, /privacy, /admin
+    api/submit          validates answers, scores them, writes the row, returns the letter
+    api/status          public open/closed flag
+    api/admin/*         sign in/out, open/close (signed HttpOnly session)
+  components/           CompassFlow (the form), Letter
+  lib/
+    config.ts           term, intakes, programmes, helplines, contacts: edit this each term
+    instrument.ts       the question bank (item ids are permanent)
+    scoring.ts          indices, flags, outreach tier, next steps
+    steps.ts            the offers a letter can recommend
+    letter.ts           what the student reads
+    row.ts              sheet columns and the codebook
+    submission.ts       server-side validation
+    sheets.ts           Google Sheets REST client (no googleapis dependency)
+    store.ts            Sheets in production, .data/ in local development
+    security.ts         admin session, origin checks, rate limiting
+  proxy.ts              per-request CSP nonce
+tests/                  vitest: scoring, validation, row and letter
+docs/                   design rationale (docx + pdf) and its generator in docs/_build-src
+```
 
-## Features
-
-- ✅ 15-minute assessment (58 items + 2 open responses)
-- ✅ Mobile-responsive design
-- ✅ Timed cognitive section with visual countdown
-- ✅ Automatic scoring and flag generation
-- ✅ Results summary for students
-- ✅ Google Sheets integration for data storage
-- ✅ Admin portal to open/close assessments
-- ✅ No authentication required for students
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 18+ 
-- A Google Cloud account (for Sheets API)
-- A Vercel account (for deployment)
-
-### Installation
+## Run it
 
 ```bash
-# Clone the repository
-git clone <your-repo-url>
-cd student-success-compass
-
-# Install dependencies
 npm install
-
-# Copy environment template
-cp .env.example .env.local
-
-# Configure your environment variables (see SETUP.md for Google Sheets setup)
-# Then start development server
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view the app.
-
-## Project Structure
-
-```
-student-success-compass/
-├── src/
-│   ├── app/                    # Next.js App Router pages
-│   │   ├── page.tsx            # Landing page (name entry)
-│   │   ├── intake/             # Intake year selection
-│   │   ├── program/            # Program selection
-│   │   ├── test/               # Main assessment
-│   │   ├── results/            # Results display
-│   │   ├── admin/              # Admin portal
-│   │   └── api/                # API routes
-│   │       ├── status/         # Check test status
-│   │       ├── toggle/         # Toggle open/closed
-│   │       └── submit/         # Submit responses
-│   ├── components/             # React components
-│   ├── context/                # React context (test state)
-│   └── lib/                    # Utilities
-│       ├── types.ts            # TypeScript definitions
-│       ├── questions.ts        # All test questions
-│       ├── scoring.ts          # Scoring algorithms
-│       └── googleSheets.ts     # Google Sheets API
-├── public/                     # Static assets
-├── SETUP.md                    # Detailed setup guide
-└── .env.example                # Environment template
-```
-
-## Configuration
-
-See [SETUP.md](./SETUP.md) for detailed instructions on:
-
-1. Creating a Google Cloud service account
-2. Setting up Google Sheets API
-3. Configuring environment variables
-4. Deploying to Vercel
-
-## Admin Portal
-
-Access the admin portal to open/close the assessment:
-
-```
-https://your-domain.vercel.app/admin?key=your-admin-secret-key
-```
-
-When closed, students see a friendly message that the assessment is unavailable.
-
-## Google Sheet Structure
-
-The app creates two sheets:
-
-### Responses Sheet
-Contains all student responses and calculated scores with columns for:
-- Metadata (timestamp, name, intake year, program)
-- Raw responses for all sections (A1-E6)
-- Calculated flags (Language, Wellbeing, Attention, Reading, Numerical)
-- Engagement domain scores
-- Cognitive scores
-
-### Config Sheet
-Contains a single cell (`A2`) with the test status (`open` or `closed`).
-
-## Assessment Sections
-
-| Section | Items | Time | Description |
-|---------|-------|------|-------------|
-| A: Foundation | 6 | 1-2 min | Language, wellbeing baseline, background |
-| B: Learning Profile | 15 | 2-3 min | Attention, reading, numerical processing |
-| C: Engagement | 30 | 4-5 min | Five engagement domains |
-| D: Thinking Patterns | 12 | 5 min (timed) | Abstract, numerical, critical reasoning |
-| E: Reflection | 4+2 | 1-2 min | Strengths, support preferences, open responses |
-
-## Scoring & Flags
-
-### Traffic Light System
-
-- 🟢 **GREEN**: No particular support indicated
-- 🟡 **YELLOW**: May benefit from strategies/resources
-- 🔴 **RED**: Recommend follow-up conversation
-
-### Score Ranges
-
-| Measure | Range | Notes |
-|---------|-------|-------|
-| Engagement domains | 6-30 each | Higher is better |
-| Total Engagement | 30-150 | Sum of all domains |
-| Grit Indicator | 6-30 | Subset of engagement items |
-| Cognitive domains | 0-4 each | Correct answers |
-| Total Cognitive | 0-12 | Sum of all domains |
-
-## Development
+With no Google variables set, development stores responses in `.data/compass-dev.json`
+and the Compass starts open. Put an `ADMIN_SECRET_KEY` in `.env.local` to use `/admin`.
 
 ```bash
-# Run development server
-npm run dev
-
-# Build for production
+npm test          # unit tests
+npm run typecheck
 npm run build
-
-# Start production server
-npm start
-
-# Lint code
-npm run lint
 ```
 
-## Deployment
+## Each term
 
-### Vercel (Recommended)
+1. In `src/lib/config.ts`, set `CURRENT_INTAKE` to the intake arriving this term, add it
+   to `INTAKES`, and update `SITE.term`.
+2. Commit and push to `main`. Vercel redeploys.
+3. Open the Compass from `/admin`.
 
-1. Push your code to GitHub
-2. Import the project in Vercel
-3. Add environment variables in Vercel dashboard
-4. Deploy
+## Deploying
 
-See [SETUP.md](./SETUP.md) for detailed Vercel deployment instructions.
-
-## License
-
-Proprietary - ALCHE Internal Use Only
-
-## Support
-
-For technical issues or questions, contact your system administrator.
+See `SETUP.md`. Push to `main` and Vercel deploys. Environment variables are the same as
+version 1; no new ones are required.

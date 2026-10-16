@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# local data written by the development store (never commit)
+.data/
+
+# secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*service-account*.json
+*-credentials*.json
+
+# vercel
+.vercel
+
+# os
+.DS_Store
+
+# python build cache
+__pycache__/
